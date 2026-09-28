@@ -10,6 +10,9 @@ backend/data/
 backend/sentinelvision.db
 *.db
 *.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
 
 # ---------- AI model weights / caches ----------
 *.pt

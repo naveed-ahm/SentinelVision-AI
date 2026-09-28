@@ -22,7 +22,7 @@ from app.models.event import DetectionEvent, PlateRead, Vehicle, VehicleSighting
 from app.models.user import utcnow
 from app.services import camera_service
 from app.services.alert_service import events_bus, raise_alert
-from app.services.detection_service import detector, plate_reader
+from app.services.detection_service import Detection, detector, plate_reader
 from app.services.storage import storage
 from app.services.tracking_service import IoUTracker
 from app.workers.live_store import live_store
@@ -63,12 +63,42 @@ class CameraWorker(threading.Thread):
         self.seq = 0
         self._last_frame: np.ndarray | None = None
         self._last_persisted_track: dict[int, float] = {}
+        self._bgsub = None  # lazy MOG2 for the demo-scene fallback
 
     def _resolve_source(self) -> str | int:
         cam = self.camera
         if cam.protocol == "webcam":
             return 0
         return camera_service.build_effective_url(cam)
+
+    def _motion_detections(self, frame: np.ndarray) -> list[Detection]:
+        """Demo-scene fallback: MOG2 background subtraction when YOLO finds nothing.
+
+        The synthetic demo clips are stylized vector scenes outside YOLO's
+        training distribution, so real detections there would be zero and the
+        ANPR/watchlist pipeline could never be exercised. Background
+        subtraction finds the clips' actual moving objects (no fabricated
+        boxes); YOLO remains the primary and only detector for real cameras.
+        """
+        if self._bgsub is None:
+            self._bgsub = cv2.createBackgroundSubtractorMOG2(
+                history=250, varThreshold=40, detectShadows=False
+            )
+        mask = self._bgsub.apply(frame)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        frame_area = float(frame.shape[0] * frame.shape[1])
+        out: list[Detection] = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < frame_area * 0.0015 or area > frame_area * 0.35:
+                continue
+            x, y, w, h = cv2.boundingRect(c)
+            if w < 24 or h < 24:
+                continue
+            label = "motorcycle" if area < 9000 else ("truck" if area > 26000 else "car")
+            out.append(Detection(bbox=(float(x), float(y), float(w), float(h)), label=label, confidence=0.80))
+        return out
 
     def _update_status(self, status: str, error: str = "") -> None:
         db = SessionLocal()
@@ -264,6 +294,10 @@ class CameraWorker(threading.Thread):
                     if settings.ENABLE_WATCHLIST:
                         from app.services.watchlist_service import watchlist_service
 
+                        logger.debug(
+                            "watchlist: checking plate=%r conf=%.3f read_id=%s",
+                            plate_text, plate_conf, plate_read_id,
+                        )
                         watchlist_service.check_plate(
                             db,
                             plate_text=plate_text,
@@ -276,7 +310,7 @@ class CameraWorker(threading.Thread):
                             camera_name=cam.name,
                         )
                 except Exception as exc:
-                    logger.debug("watchlist module skipped: %s", exc)
+                    logger.warning("watchlist module skipped: %s", exc)
 
                 if vehicle.total_sightings % 10 == 0:
                     raise_alert(
@@ -476,8 +510,14 @@ class CameraWorker(threading.Thread):
                 frame_idx += 1
 
                 tracks: list = []
-                if self.camera.detection_enabled and detector.available and frame_idx % detect_every == 0:
+                if (
+                    self.camera.detection_enabled
+                    and (detector.available or detector.load())  # lazy-load once; .available alone never becomes true here
+                    and frame_idx % detect_every == 0
+                ):
                     raw = detector.detect(frame)
+                    if not raw and self.camera.is_demo:
+                        raw = self._motion_detections(frame)
                     ts_now = datetime.now(timezone.utc)
                     tracks = self.tracker.update(raw, ts_now.timestamp())
                     for t in tracks:

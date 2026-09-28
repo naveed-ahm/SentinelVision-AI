@@ -6,6 +6,7 @@ Both components degrade gracefully: when the optional heavy dependencies
 a clear banner in the UI. No fake detections are ever produced.
 """
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -105,6 +106,7 @@ class PlateReader:
 
     def __init__(self) -> None:
         self._ocr = None
+        self._api3 = False
         self.available = False
         self.load_error = ""
 
@@ -112,11 +114,27 @@ class PlateReader:
         if self._ocr is not None:
             return True
         try:
+            import paddleocr
             from paddleocr import PaddleOCR  # optional dependency
 
-            self._ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+            # PaddleOCR 3.x removed use_angle_cls/show_log and now exposes a
+            # doc-preprocessing pipeline we don't need for small plate crops;
+            # disable it to load only det+rec. Support both APIs.
+            os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+            version = getattr(paddleocr, "__version__", "2.0") or "2.0"
+            self._api3 = int(str(version).split(".")[0]) >= 3
+            if self._api3:
+                self._ocr = PaddleOCR(
+                    lang="en",
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                    enable_mkldnn=False,  # paddle 3.x oneDNN backend breaks PP-OCR on Windows CPU
+                )
+            else:
+                self._ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
             self.available = True
-            logger.info("PaddleOCR loaded")
+            logger.info("PaddleOCR loaded (api %s)", "3.x" if self._api3 else "2.x")
             return True
         except Exception as exc:
             self.load_error = str(exc)[:300]
@@ -153,32 +171,56 @@ class PlateReader:
         gray = cv2.bilateralFilter(gray, 7, 40, 40)
         return cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(gray)
 
+    def _run_ocr(self, pre: np.ndarray) -> list[tuple[str, float]]:
+        """Run OCR, returning (text, confidence) pairs. Handles 2.x and 3.x APIs."""
+        if self._api3:
+            # PaddleOCR 3.x: predict() -> results with rec_texts / rec_scores.
+            # The 3.x predictor expects 3-channel input; our preprocess() is gray.
+            if pre.ndim == 2:
+                pre = cv2.cvtColor(pre, cv2.COLOR_GRAY2BGR)
+            try:
+                lines: list[tuple[str, float]] = []
+                for res in self._ocr.predict(pre) or []:
+                    getter = (res.get if isinstance(res, dict) else lambda k, d=None: getattr(res, k, d))
+                    texts = getter("rec_texts", []) or []
+                    scores = getter("rec_scores", []) or []
+                    lines.extend((str(t), float(s)) for t, s in zip(texts, scores))
+                return lines
+            except Exception as exc:
+                logger.warning("OCR failed: %s", exc)
+                return []
+        # PaddleOCR 2.x: ocr() -> [[ [box, (text, conf)], ... ]]
+        try:
+            result = self._ocr.ocr(pre, cls=True)
+        except Exception as exc:
+            logger.warning("OCR failed: %s", exc)
+            return []
+        lines = []
+        for line in (result[0] if result else []) or []:
+            try:
+                lines.append((line[1][0], float(line[1][1])))
+            except Exception:
+                continue
+        return lines
+
     def read_text(self, plate_crop_bgr: np.ndarray) -> tuple[str, float]:
         """Returns (normalized_text, confidence). ('', 0.0) when unreadable."""
         if not self.load() or plate_crop_bgr is None or plate_crop_bgr.size == 0:
             return "", 0.0
-        try:
-            pre = self.preprocess(plate_crop_bgr)
-            result = self._ocr.ocr(pre, cls=True)
-        except Exception as exc:
-            logger.warning("OCR failed: %s", exc)
-            return "", 0.0
-        if not result or not result[0]:
+        pre = self.preprocess(plate_crop_bgr)
+        lines = self._run_ocr(pre)
+        if not lines:
             return "", 0.0
         best_text, best_conf = "", 0.0
-        for line in result[0]:
-            try:
-                text, conf = line[1][0], float(line[1][1])
-            except Exception:
-                continue
+        for text, conf in lines:
             cleaned = _PLATE_STRIP_RE.sub("", text.upper())
             if PLATE_RE.match(cleaned) and conf > best_conf:
                 best_text, best_conf = cleaned, conf
         if not best_text:
             # keep the most confident raw fragment for the review workflow
             try:
-                raw = max(result[0], key=lambda l: float(l[1][1]))
-                best_text, best_conf = _PLATE_STRIP_RE.sub("", raw[1][0].upper()), float(raw[1][1])
+                raw_text, raw_conf = max(lines, key=lambda l: l[1])
+                best_text, best_conf = _PLATE_STRIP_RE.sub("", raw_text.upper()), raw_conf
             except Exception:
                 return "", 0.0
         return best_text, best_conf
