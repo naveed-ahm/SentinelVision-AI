@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { api, errMessage, getToken, setToken } from "../api/client";
+import { api, AUTH_REJECTED_EVENT, errMessage, getToken, setToken } from "../api/client";
 import type { Token, User } from "../api/types";
 
 interface AuthState {
@@ -19,6 +19,14 @@ const AuthContext = createContext<AuthState>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Backend rejected our credentials (401 / WS 4401): drop the in-memory user so
+  // RequireAuth redirects to login instead of leaving pages stuck on "Loading".
+  useEffect(() => {
+    const onRejected = () => setUser(null);
+    window.addEventListener(AUTH_REJECTED_EVENT, onRejected);
+    return () => window.removeEventListener(AUTH_REJECTED_EVENT, onRejected);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

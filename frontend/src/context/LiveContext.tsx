@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { getToken, WS_BASE } from "../api/client";
+import { getToken, notifyAuthRejected, WS_BASE } from "../api/client";
 
 export interface LiveAlert {
   id: number;
@@ -49,7 +49,7 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
 
   const connect = useCallback(() => {
     const token = getToken();
-    if (!token) return;
+    if (!token) return; // logged out — don't reconnect
     const ws = new WebSocket(`${WS_BASE}/api/v1/ws/dashboard`);
     wsRef.current = ws;
     ws.onopen = () => {
@@ -73,13 +73,22 @@ export function LiveProvider({ children }: { children: React.ReactNode }) {
         /* ignore malformed frames */
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       setConnected(false);
+      // 4401 = backend rejected our token (e.g. SECRET_KEY rotated). Notify auth
+      // listeners and stop reconnecting — retrying can never succeed until the
+      // user logs in again, and the retry loop would spam the backend.
+      if (ev.code === 4401) {
+        notifyAuthRejected();
+        return;
+      }
       // Persistent reconnect with capped backoff (2s..15s). The badge keeps the
       // user informed; giving up would leave a silent dashboard.
       retryRef.current += 1;
       const delay = Math.min(2000 * retryRef.current, 15000);
-      setTimeout(connect, delay);
+      setTimeout(() => {
+        if (getToken()) connect();
+      }, delay);
     };
     ws.onerror = () => ws.close();
   }, []);
