@@ -1,0 +1,31 @@
+# Optional AI stack. Install only if your machine can handle it.
+# CPU-only PyTorch is enough for the YOLOv8n proof of concept.
+#
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   pip install ultralytics
+#
+# PaddleOCR (ANPR text reading):
+#   pip install paddlepaddle  (CPU)   ->  https://www.paddlepaddle.org.cn/en/install/quick
+#   pip install paddleocr
+#
+# On GPU machines install the CUDA build of torch instead and the detection
+# service will use it automatically.
+ultralytics>=8.3.0
+paddleocr>=2.7.0
+paddlepaddle>=2.6.0
+
+# ----------------------------------------------------------------------------
+# Optional extended AI modules (all degrade gracefully without these)
+# ----------------------------------------------------------------------------
+# Person detection model (independent YOLO instance) — reuses ultralytics above.
+#
+# Vehicle Re-ID / attribute embedding model tier (optional, torch-based):
+#   without torch, both modules fall back to their built-in OpenCV heuristic
+#   tiers (HSV color histograms + edge descriptors). To use learned embeddings,
+#   train/export a compatible checkpoint (torch.load state dict with a 128-dim
+#   pooled feature head) and point VEHICLE_ATTRIBUTE_WEIGHTS at it.
+torch>=2.0
+# torchvision>=0.15   # only if you swap in a pretrained backbone
+#
+# Quality assessment and anomaly detection are pure OpenCV/numpy — no extra
+# packages required.

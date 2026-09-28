@@ -1,0 +1,55 @@
+# SentinelVision AI — local development / demo deployment.
+#   docker compose up --build
+#   then open http://localhost:8080  (login: admin / Admin@12345)
+#
+# The default configuration uses SQLite for zero-setup demos. To use
+# PostgreSQL, uncomment the db service and the backend environment vars.
+
+services:
+  # Uncomment for PostgreSQL:
+  #
+  # db:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_DB: sentinelvision
+  #     POSTGRES_USER: sentinel
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_prod}
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U sentinel"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      ENVIRONMENT: demo
+      DEMO_MODE: "true"
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+      # DATABASE_URL: postgresql+psycopg://sentinel:${POSTGRES_PASSWORD:-changeme_in_prod}@db:5432/sentinelvision
+      CORS_ORIGINS: "http://localhost:8080,http://127.0.0.1:8080"
+      MAX_CONCURRENT_STREAMS: "8"
+    volumes:
+      - media_data:/app/data/media
+      - ./data/demo_videos:/app/demo_videos:ro
+    # SEED_DEMO=1 seeds users + labeled synthetic history on first start
+    command: sh -c "if [ \"$${SEED_DEMO:-1}\" = \"1\" ]; then python -m app.seed; fi; python -m app.workers.ingestion & exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    # depends_on:
+    #   db:
+    #     condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  media_data:

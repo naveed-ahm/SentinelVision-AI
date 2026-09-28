@@ -1,0 +1,43 @@
+# ---------- secrets / env ----------
+.env
+backend/.env
+frontend/.env
+*.env.local
+
+# ---------- generated data (db, logs, media, demo videos) ----------
+data/
+backend/data/
+backend/sentinelvision.db
+*.db
+*.sqlite3
+
+# ---------- AI model weights / caches ----------
+*.pt
+*.onnx
+*.engine
+backend/models/
+~/.paddlex/
+
+# ---------- python ----------
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# ---------- node / frontend ----------
+node_modules/
+dist/
+frontend/dist/
+*.local
+
+# ---------- logs ----------
+*.log
+logs/
+
+# ---------- editor / OS ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
