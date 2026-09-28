@@ -39,8 +39,9 @@ frontend/dist/
 *.log
 logs/
 
-# ---------- editor / OS ----------
+# ---------- editor / OS / local tools ----------
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
+.freebuff/
